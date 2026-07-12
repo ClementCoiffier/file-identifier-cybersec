@@ -1,0 +1,14 @@
+# Bytecode Python
+__pycache__/
+*.pyc
+
+# Environnement virtuel
+venv/
+.venv/
+
+# Fichiers d'IDE
+.vscode/
+.idea/
+
+# Fichiers de test locaux (échantillons malware simulés, fichiers renommés...)
+samples/
