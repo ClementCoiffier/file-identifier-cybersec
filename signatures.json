@@ -1,0 +1,64 @@
+{
+  "signatures": [
+    {
+      "type": "JPEG image",
+      "magic": "FFD8FF",
+      "extensions": [".jpg", ".jpeg", ".jfif"]
+    },
+    {
+      "type": "PNG image",
+      "magic": "89504E470D0A1A0A",
+      "extensions": [".png"]
+    },
+    {
+      "type": "GIF image",
+      "magic": "474946383961",
+      "extensions": [".gif"]
+    },
+    {
+      "type": "PDF document",
+      "magic": "25504446",
+      "extensions": [".pdf"]
+    },
+    {
+      "type": "Windows executable (PE)",
+      "magic": "4D5A",
+      "extensions": [".exe", ".dll", ".sys"]
+    },
+    {
+      "type": "Linux executable (ELF)",
+      "magic": "7F454C46",
+      "extensions": [".elf", ".so", ""]
+    },
+    {
+      "type": "ZIP archive",
+      "magic": "504B0304",
+      "extensions": [".zip", ".docx", ".xlsx", ".pptx", ".apk", ".jar"]
+    },
+    {
+      "type": "RAR archive",
+      "magic": "526172211A07",
+      "extensions": [".rar"]
+    },
+    {
+      "type": "7-Zip archive",
+      "magic": "377ABCAF271C",
+      "extensions": [".7z"]
+    },
+    {
+      "type": "GZIP archive",
+      "magic": "1F8B",
+      "extensions": [".gz", ".tgz"]
+    },
+    {
+      "type": "MP3 audio",
+      "magic": "494433",
+      "extensions": [".mp3"]
+    },
+    {
+      "type": "BMP image",
+      "magic": "424D",
+      "extensions": [".bmp"]
+    }
+  ]
+}
