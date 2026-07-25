@@ -3,8 +3,13 @@ import json
 import os 
 import argparse
 from enum import Enum
+import csv
+from datetime import datetime
 
+VERSION = "0.5.0"
+RESET = "\033[0m" #remet tout à zéro, si pas de RESET toute la suite de la console reste colorée.
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "signatures.json") #Base trouvée, peu importe où on l'appelle.
+CSV_FIELDS = ["path", "size", "header", "type", "verdict", "message"]
 
 #Types qui déguisés sous une autre extension, constituent un signal fort.
 DANGEROUS_TYPES = {
@@ -14,16 +19,29 @@ DANGEROUS_TYPES = {
 
 class Verdict(Enum):
     """Verdicts possibles, avec leur libellé d'affichage et leur code de sortie."""
-    OK       = ("[OK]      ", 0)
-    NO_EXT   = ("[INFO]    ", 0)
-    UNKNOWN  = ("[INCONNU] ", 0)
-    MISMATCH = ("[SUSPECT] ", 1)
-    ERREUR   = ("[ERREUR]  ", 1)
-    CRITICAL = ("[CRITIQUE]", 2)
+    #\033 est le caractère d'échappement ASCII (27)
+    OK       = ("[OK]      ", 0, "\033[32m")    # vert 
+    NO_EXT   = ("[INFO]    ", 0, "\033[36m")    # cyan
+    UNKNOWN  = ("[INCONNU] ", 0, "\033[90m")    # gris
+    MISMATCH = ("[SUSPECT] ", 1, "\033[33m")    # jaune
+    ERREUR   = ("[ERREUR]  ", 1, "\033[35m")    # magenta
+    CRITICAL = ("[CRITIQUE]", 2, "\033[31;1m")  # rouge gras
 
-    def __init__(self, label, exit_code):
+    def __init__(self, label, exit_code, color):
         self.label = label
         self.exit_code = exit_code
+        self.color = color
+
+def enable_colors():
+    """Active les couleurs uniquement si la sortie est un vrai terminal."""
+    if not sys.stdout.isatty(): #Si l'user écrit python file_identifier.py samples > rapport.txt, la sortie n'est plus un terminal mais un fichier. L'outil CLI teste isatty avant de colorer ce qui garde la sortie exploitable par grep ou par un autre script.
+        return False
+    if os.name =="nt":
+        os.system("") #active l'interprétation des séquences ANSI sous Windows (contournement)
+    return True
+
+def colorize(self, text, enabled):
+        return f"{self.color}{text}{RESET}" if enabled else text
 
 def load_signatures(db_path=DB_PATH):
     """Charge la base de signatures et convertit les magic en bytes."""
@@ -79,15 +97,19 @@ def scan_file(filepath, signatures):
     """Analyse un fichier et retourne un dict de résultat."""
     try:
         header = read_header(filepath)
+        size = os.path.getsize(filepath)
     except (OSError) as e:
-        return {"path": filepath, "type": None,
-                "verdict": Verdict.Erreur, "message": f"Lecture impossible : {e}"}
+        return {"path": filepath, "size": None, "header": None, "type": None,
+                "verdict": Verdict.ERREUR, "message": f"Lecture impossible : {e}"}
 
     sig = identify(header, signatures)
     verdict, message = check_mismatch(filepath, sig)
     return {"path": filepath,
+            "size": size,
+            "header": header.hex(" ").upper() if header else "", #Le header est stocké en chaîne via .hex(" "), pas en bytes car le module json ne sait pas sérialiser des bytes
             "type": sig["type"] if sig else None, 
-            "verdict": verdict, "message": message}
+            "verdict": verdict, 
+            "message": message}
 
 def collect_files(paths, recursive=False):
     """Transforme une liste de chemins (fichiers ou dossiers) en liste de fichiers."""
@@ -109,6 +131,30 @@ def collect_files(paths, recursive=False):
             print(f"[ERREUR] Chemin introuvable : {p}", file=sys.stderr)
     return files
 
+def to_export(result):
+    """Copie du résultat avec le Verdict converti en chaîne, pour l'export."""
+    return {**result, "verdict": result["verdict"].name} #crée une copie du dictionnaire en écrasant une seule clé (l'original reste intact).
+
+def export_json(path, results, summary, targets, recursive, exit_code):
+    report = {
+        "tool": "file_identifier",
+        "version": VERSION,
+        "scanned_at": datetime.now().isoformat(timespec="seconds"),
+        "targets": targets,
+        "recursive": recursive,
+        "summary": {v.name: n for v, n in summary.items()},
+        "exit_code": exit_code,
+        "results": [to_export(r) for r in results],
+    }
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(report, f, indent=2, ensure_ascii=False)
+
+def export_csv(path, results):
+    with open(path, "w", newline="", encoding="utf-8-sig") as f: #le module csv gère lui-même ses fins de ligne (évite \r de windows).
+        writer = csv.DictWriter(f, fieldnames=CSV_FIELDS)
+        writer.writeheader()
+        writer.writerows(to_export(r) for r in results)
+        
 def main():
     parser = argparse.ArgumentParser(
         description="Identifie le type réel des fichiers via leur magic number "
@@ -121,27 +167,42 @@ def main():
                         help="n'afficher que les anomalies")
     parser.add_argument("--db", default=DB_PATH,
                         help="chemin vers une base de signatures alternative")
+    parser.add_argument("--json", metavar="FICHIER",
+                        help="écrire un rapport JSON")
+    parser.add_argument("--csv", metavar="FICHIER",
+                        help="écrire un rapport CSV")
     args = parser.parse_args()
 
     signatures = load_signatures(args.db)
     files = collect_files(args.paths, args.recursive)
 
+    results = []
     counts = {}
     worst = 0
+    colors = enable_colors()
 
     for filepath in files:
         r = scan_file(filepath, signatures)
+        results.append(r)
         v = r["verdict"]
         counts[v] = counts.get(v, 0) + 1 #incrémente un compteur qui peut ne pas encore exister ; get renvoie 0 par défaut au lieu de lever une KeyError
         worst = max(worst, v.exit_code) #fait remonter la gravité maximale
 
         if args.quiet and v.exit_code == 0:
             continue
-        print(f"{v.label}{r['path']}")
+        print(colorize(v, v.label, colors) + " " + r["path"])
         print(f"{'':11}{r['message']}")
 
     resume = ", ".join(f"{n} {v}" for v, n in sorted(counts.items(), key=lambda kv: -kv[0].exit_code)) #Les membres de l'énumération sont triés par gravité décroissante, puis on construit une chaîne de résumé.
     print(f"\n{len(files)} fichier(s) analysé(s) - {resume or 'aucun résultat'}")
+
+    if args.json:
+        export_json(args.json, results, counts, args.paths, args.recursive, worst)
+        print(f"Rapport JSON : {args.json}")
+    if args.csv:
+        export_csv(args.csv, results)
+        print(f"Rapport CSV  : {args.csv}")
+
     sys.exit(worst)
 
 if __name__ == "__main__":

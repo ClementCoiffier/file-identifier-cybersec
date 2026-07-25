@@ -12,3 +12,9 @@ venv/
 
 # Fichiers de test locaux (échantillons malware simulés, fichiers renommés...)
 samples/
+
+# Rapports de test
+rapport*.json
+rapport*.csv
+rapport*.txt
+alertes*.json
