@@ -1,6 +1,9 @@
 import sys
 import json
 import os 
+import argparse
+
+DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "signatures.json") #Base trouvée, peu importe où on l'appelle.
 
 #Types qui déguisés sous une autre extension, constituent un signal fort.
 DANGEROUS_TYPES = {
@@ -8,7 +11,7 @@ DANGEROUS_TYPES = {
     "Linux executable (ELF)",
 }
 
-def load_signatures(db_path="signatures.json"):
+def load_signatures(db_path=DB_PATH):
     """Charge la base de signatures et convertit les magic en bytes."""
     with open(db_path, "r") as f:
         data= json.load(f)  #dictionnaire à une seule clé : « signatures » et une liste de valeurs.
@@ -45,7 +48,7 @@ def check_mismatch(filepath, sig):
     ext = get_extension(filepath)
 
     if sig is None:
-        return("UKNOWN", "Type réel non identifiable (signature absente de la base)")
+        return("UNKNOWN", "Type réel non identifiable (signature absente de la base)")
 
     if ext == "":
         return ("NO_EXT", f"Fichier sans extension, type réel : {sig['type']}")
@@ -58,33 +61,84 @@ def check_mismatch(filepath, sig):
 
     return ("MISMATCH", f"L'extension {ext} ne correspond pas au contenu ({sig['type']})")
 
+def scan_file(filepath, signatures):
+    """Analyse un fichier et retourne un dict de résultat."""
+    try:
+        header = read_header(filepath)
+    except (PermissionError, OSError) as e:
+        return {"path": filepath, "type": None,
+                "verdict": "Erreur", "message": f"Lecture impossible : {e}"}
+
+    sig = identify(header, signatures)
+    verdict, message = check_mismatch(filepath, sig)
+    return {"path": filepath,
+            "type": sig["type"] if sig else None, 
+            "verdict": verdict, "message": message}
+
+def collect_files(paths, recursive=False):
+    """Transforme une liste de chemins (fichiers ou dossiers) en liste de fichiers."""
+    files = []
+    for p in paths:
+        if os.path.isfile(p):
+            files.append(p)
+        elif os.path.isdir(p):
+            if recursive:
+                for root, _, names in os.walk(p): #_ convention Python pour « variable dont je n'ai pas l'usage »
+                    for n in sorted(names):
+                        files.append(os.path.join(root, n))
+            else:
+                for n in sorted(os.listdir(p)):
+                    full = os.path.join(p, n)
+                    if os.path.isfile(full):
+                        files.append(full)
+        else:
+            print(f"[ERREUR] Chemin introuvable : {p}", file=sys.stderr)
+    return files
+
 LABELS = {
     "OK":       "[OK]       ",
     "MISMATCH": "[SUSPECT]  ",
     "CRITICAL": "[CRITIQUE] ",
     "NO_EXT":   "[INFO]     ",
     "UNKNOWN":  "[INCONNU]  ",
+    "ERREUR":   "[ERREUR]   ",
 }
 
-EXIT_CODES = {"OK": 0, "NO_EXT": 0, "UNKNOWN": 0, "MISMATCH": 1, "CRITICAL": 2}
+EXIT_CODES = {"OK": 0, "NO_EXT": 0, "UNKNOWN": 0, "MISMATCH": 1, "ERREUR": 1, "CRITICAL": 2}
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Identifie le type réel des fichiers via leur magic number "
+                    "et signale les extensions mensongères.")
+    parser.add_argument("paths", nargs="+", metavar="CHEMIN", #accepte un ou plusieurs chemins, et argparse refuse tout seul l'appel sans argument avec un message d'usage
+                        help="fichiers ou dossiers à analyser")
+    parser.add_argument("-r", "--recursive", action="store_true",
+                        help="parcourir aussi les sous-dossiers")
+    parser.add_argument("-q", "--quiet", action="store_true",
+                        help="n'afficher que les anomalies")
+    parser.add_argument("--db", default=DB_PATH,
+                        help="chemin vers une base de signatures alternative")
+    args = parser.parse_args()
+
+    signatures = load_signatures(args.db)
+    files = collect_files(args.paths, args.recursive)
+
+    counts = {}
+    worst = 0
+
+    for filepath in files:
+        r = scan_file(filepath, signatures)
+        counts[r["verdict"]] = counts.get(r["verdict"], 0) + 1 #incrémente un compteur qui peut ne pas encore exister ; get renvoie 0 par défaut au lieu de lever une KeyError
+        worst = max(worst, EXIT_CODES[r["verdict"]]) #fait remonter la gravité maximale
+
+        if args.quiet and EXIT_CODES[r["verdict"]] == 0:
+            continue
+        print(f"{LABELS[r['verdict']]}{r['path']}")
+        print(f"{'':11}{r['message']}")
+
+    resume = ", ".join(f"{n} {v}" for v, n in sorted(counts.items()))
+    print(f"\n{len(files)} fichier(s) analysé(s) - {resume or 'aucun résultat'}")
+    sys.exit(worst)
 
 if __name__ == "__main__":
-    path = sys.argv[1]
-    header = read_header(path)
-    sigs = load_signatures() #liste complète des dictionnaires.
-    result = identify(header, sigs)
-    verdict, message = check_mismatch(path, result)
-
-    #print(f"{len(sigs)} signatures chargées")
-    #for s in sigs:
-    #    print(f" {s['type']}: {s['magic_bytes'].hex(' ').upper()}")
-    
-    # .hex(" ") affiche les octets séparés par des espaces.
-    #print(f"Header de {path}: {header.hex(' ').upper()}") #.hex converti en hexa
-
-    print(f"Fichier: {path}")
-    print(f"Header : {header.hex(' ').upper() if header else '(fichier vide)'}")
-    print(f"Type détecté: {result['type'] if result else 'inconnu'}")
-    print(f"{LABELS[verdict]}{message}")
-
-    sys.exit(EXIT_CODES[verdict])
+    main()

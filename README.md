@@ -1,10 +1,14 @@
 # File Identifier — détection de fichiers déguisés
 
-Ce projet montre que je comprends les techniques d'évasion et que je sais construire des outils défensifs.
+Outil d'analyse qui identifie le type réel d'un fichier à partir de son en-tête binaire et signale les extensions mensongères.
 
-Un attaquant qui veut faire exécuter un binaire à sa victime le renomme rarement `malware.exe`. Il l'appelle `photo_vacances.jpeg`, parce que l'extension est une convention de nommage : elle n'a aucune autorité sur le contenu réel du fichier. Le système d'exploitation, lui, ne s'y trompe pas — il lit les premiers octets.
+## Le problème
 
-Cet outil fait la même chose : il lit le header binaire de chaque fichier, identifie son type réel via une base de *magic numbers*, et signale les cas où l'extension déclarée contredit le contenu.
+Un attaquant qui veut faire exécuter un binaire à sa victime le renomme rarement `malware.exe`. Il l'appelle `photo_vacances.jpeg`. L'extension n'est qu'une convention de nommage : elle n'a aucune autorité sur le contenu réel du fichier, et rien n'empêche de la falsifier.
+
+Le contenu, lui, ne ment pas. La plupart des formats commencent par une séquence d'octets fixe — le *magic number* — qui identifie le type de manière fiable : `FF D8 FF` pour un JPEG, `4D 5A` pour un exécutable Windows, `25 50 44 46` (`%PDF`) pour un PDF.
+
+Cet outil lit ces octets, en déduit le type réel, et le confronte à l'extension déclarée.
 
 ## Utilisation
 
