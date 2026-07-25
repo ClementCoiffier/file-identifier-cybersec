@@ -2,6 +2,7 @@ import sys
 import json
 import os 
 import argparse
+from enum import Enum
 
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "signatures.json") #Base trouvée, peu importe où on l'appelle.
 
@@ -10,6 +11,19 @@ DANGEROUS_TYPES = {
     "Windows executable (PE)",
     "Linux executable (ELF)",
 }
+
+class Verdict(Enum):
+    """Verdicts possibles, avec leur libellé d'affichage et leur code de sortie."""
+    OK       = ("[OK]      ", 0)
+    NO_EXT   = ("[INFO]    ", 0)
+    UNKNOWN  = ("[INCONNU] ", 0)
+    MISMATCH = ("[SUSPECT] ", 1)
+    ERREUR   = ("[ERREUR]  ", 1)
+    CRITICAL = ("[CRITIQUE]", 2)
+
+    def __init__(self, label, exit_code):
+        self.label = label
+        self.exit_code = exit_code
 
 def load_signatures(db_path=DB_PATH):
     """Charge la base de signatures et convertit les magic en bytes."""
@@ -48,26 +62,26 @@ def check_mismatch(filepath, sig):
     ext = get_extension(filepath)
 
     if sig is None:
-        return("UNKNOWN", "Type réel non identifiable (signature absente de la base)")
+        return(Verdict.UNKNOWN, "Type réel non identifiable (signature absente de la base)")
 
     if ext == "":
-        return ("NO_EXT", f"Fichier sans extension, type réel : {sig['type']}")
+        return (Verdict.NO_EXT, f"Fichier sans extension, type réel : {sig['type']}")
 
     if ext in sig["extensions"]:
-        return ("OK", f"Extension cohérente avec le contenu ({sig['type']})")
+        return (Verdict.OK, f"Extension cohérente avec le contenu ({sig['type']})")
 
     if sig["type"] in DANGEROUS_TYPES:
-        return ("CRITICAL", f"L'extension {ext} masque un exécutable ({sig['type']})")
+        return (Verdict.CRITICAL, f"L'extension {ext} masque un exécutable ({sig['type']})")
 
-    return ("MISMATCH", f"L'extension {ext} ne correspond pas au contenu ({sig['type']})")
+    return (Verdict.MISMATCH, f"L'extension {ext} ne correspond pas au contenu ({sig['type']})")
 
 def scan_file(filepath, signatures):
     """Analyse un fichier et retourne un dict de résultat."""
     try:
         header = read_header(filepath)
-    except (PermissionError, OSError) as e:
+    except (OSError) as e:
         return {"path": filepath, "type": None,
-                "verdict": "Erreur", "message": f"Lecture impossible : {e}"}
+                "verdict": Verdict.Erreur, "message": f"Lecture impossible : {e}"}
 
     sig = identify(header, signatures)
     verdict, message = check_mismatch(filepath, sig)
@@ -95,17 +109,6 @@ def collect_files(paths, recursive=False):
             print(f"[ERREUR] Chemin introuvable : {p}", file=sys.stderr)
     return files
 
-LABELS = {
-    "OK":       "[OK]       ",
-    "MISMATCH": "[SUSPECT]  ",
-    "CRITICAL": "[CRITIQUE] ",
-    "NO_EXT":   "[INFO]     ",
-    "UNKNOWN":  "[INCONNU]  ",
-    "ERREUR":   "[ERREUR]   ",
-}
-
-EXIT_CODES = {"OK": 0, "NO_EXT": 0, "UNKNOWN": 0, "MISMATCH": 1, "ERREUR": 1, "CRITICAL": 2}
-
 def main():
     parser = argparse.ArgumentParser(
         description="Identifie le type réel des fichiers via leur magic number "
@@ -128,15 +131,16 @@ def main():
 
     for filepath in files:
         r = scan_file(filepath, signatures)
-        counts[r["verdict"]] = counts.get(r["verdict"], 0) + 1 #incrémente un compteur qui peut ne pas encore exister ; get renvoie 0 par défaut au lieu de lever une KeyError
-        worst = max(worst, EXIT_CODES[r["verdict"]]) #fait remonter la gravité maximale
+        v = r["verdict"]
+        counts[v] = counts.get(v, 0) + 1 #incrémente un compteur qui peut ne pas encore exister ; get renvoie 0 par défaut au lieu de lever une KeyError
+        worst = max(worst, v.exit_code) #fait remonter la gravité maximale
 
-        if args.quiet and EXIT_CODES[r["verdict"]] == 0:
+        if args.quiet and v.exit_code == 0:
             continue
-        print(f"{LABELS[r['verdict']]}{r['path']}")
+        print(f"{v.label}{r['path']}")
         print(f"{'':11}{r['message']}")
 
-    resume = ", ".join(f"{n} {v}" for v, n in sorted(counts.items()))
+    resume = ", ".join(f"{n} {v}" for v, n in sorted(counts.items(), key=lambda kv: -kv[0].exit_code)) #Les membres de l'énumération sont triés par gravité décroissante, puis on construit une chaîne de résumé.
     print(f"\n{len(files)} fichier(s) analysé(s) - {resume or 'aucun résultat'}")
     sys.exit(worst)
 
