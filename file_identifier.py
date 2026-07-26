@@ -2,8 +2,9 @@ import sys
 import json
 import os 
 import argparse
-from enum import Enum
 import csv
+import zipfile
+from enum import Enum
 from datetime import datetime
 
 VERSION = "0.5.0"
@@ -15,7 +16,35 @@ CSV_FIELDS = ["path", "size", "header", "type", "verdict", "message"]
 DANGEROUS_TYPES = {
     "Windows executable (PE)",
     "Linux executable (ELF)",
+    "Java archive (JAR)",
+    "Android package (APK)",
 }
+
+# Sous-types de ZIP, identifiés par les fichiers présents dans l'archive.
+# L'ordre compte : les plus spécifiques d'abord (un APK contient aussi un META-INF/MANIFEST.MF, il doit donc être testé avant le JAR).
+ZIP_SUBTYPES = [
+    {"type": "Android package (APK)",
+     "markers": ["AndroidManifest.xml", "classes.dex"],
+     "extensions": [".apk"]},
+    {"type": "Word document (OOXML)",
+     "markers": ["word/document.xml"],
+     "extensions": [".docx", ".docm", ".dotx"]},
+    {"type": "Excel workbook (OOXML)",
+     "markers": ["xl/workbook.xml"],
+     "extensions": [".xlsx", ".xlsm", ".xltx"]},
+    {"type": "PowerPoint presentation (OOXML)",
+     "markers": ["ppt/presentation.xml"],
+     "extensions": [".pptx", ".pptm", ".potx"]},
+    {"type": "EPUB e-book",
+     "markers": ["META-INF/container.xml", "mimetype"],
+     "extensions": [".epub"]},
+    {"type": "OpenDocument (ODF)",
+     "markers": ["content.xml", "styles.xml", "mimetype"],
+     "extensions": [".odt", ".ods", ".odp"]},
+    {"type": "Java archive (JAR)",
+     "markers": ["META-INF/MANIFEST.MF"],
+     "extensions": [".jar", ".war", ".ear"]},
+]
 
 class Verdict(Enum):
     """Verdicts possibles, avec leur libellé d'affichage et leur code de sortie."""
@@ -40,8 +69,8 @@ def enable_colors():
         os.system("") #active l'interprétation des séquences ANSI sous Windows (contournement)
     return True
 
-def colorize(self, text, enabled):
-        return f"{self.color}{text}{RESET}" if enabled else text
+def colorize(verdict, text, enabled):
+        return f"{verdict.color}{text}{RESET}" if enabled else text
 
 def load_signatures(db_path=DB_PATH):
     """Charge la base de signatures et convertit les magic en bytes."""
@@ -93,7 +122,7 @@ def check_mismatch(filepath, sig):
 
     return (Verdict.MISMATCH, f"L'extension {ext} ne correspond pas au contenu ({sig['type']})")
 
-def scan_file(filepath, signatures):
+def scan_file(filepath, signatures, deep=True):
     """Analyse un fichier et retourne un dict de résultat."""
     try:
         header = read_header(filepath)
@@ -103,6 +132,11 @@ def scan_file(filepath, signatures):
                 "verdict": Verdict.ERREUR, "message": f"Lecture impossible : {e}"}
 
     sig = identify(header, signatures)
+
+    if deep and sig and sig["type"] == "ZIP archive":
+        sub = inspect_zip(filepath)
+        if sub:
+            sig = sub
     verdict, message = check_mismatch(filepath, sig)
     return {"path": filepath,
             "size": size,
@@ -154,7 +188,21 @@ def export_csv(path, results):
         writer = csv.DictWriter(f, fieldnames=CSV_FIELDS)
         writer.writeheader()
         writer.writerows(to_export(r) for r in results)
-        
+
+def inspect_zip(filepath):
+    """Ouvre une archive ZIP et affine son type d'après les fichiers qu'elle contient.
+    Retourne un dict {type, extension}, ou None si indéterminé ou archive illisible."""
+    try: #Règle générale en analyse de fichiers hostiles : lire les métadonnées, jamais extraire.
+        with zipfile.ZipFile(filepath) as z:
+            names = set(z.namelist()) #Ne lit que le catalogue central de l'archive (car décompresser un ZIP inconnu expose aux zip bomb)
+    except (zipfile.BadZipFile, OSError):
+        return None
+
+    for sub in ZIP_SUBTYPES:
+        if all(marker in names for marker in sub["markers"]): #rend le test robuste (ex: un ZIP quelconque contenant par hasard un fichier mimetype ne sera pas pris pour un EPUB, il lui faut aussi META-INF/container.xml.)
+            return sub
+    return None
+         
 def main():
     parser = argparse.ArgumentParser(
         description="Identifie le type réel des fichiers via leur magic number "
@@ -171,6 +219,8 @@ def main():
                         help="écrire un rapport JSON")
     parser.add_argument("--csv", metavar="FICHIER",
                         help="écrire un rapport CSV")
+    parser.add_argument("--no-deep", action="store_true",
+                        help="ne pas inspecter l'intérieur des archives ZIP")
     args = parser.parse_args()
 
     signatures = load_signatures(args.db)
@@ -182,7 +232,7 @@ def main():
     colors = enable_colors()
 
     for filepath in files:
-        r = scan_file(filepath, signatures)
+        r = scan_file(filepath, signatures, deep=not args.no_deep)
         results.append(r)
         v = r["verdict"]
         counts[v] = counts.get(v, 0) + 1 #incrémente un compteur qui peut ne pas encore exister ; get renvoie 0 par défaut au lieu de lever une KeyError
@@ -193,7 +243,7 @@ def main():
         print(colorize(v, v.label, colors) + " " + r["path"])
         print(f"{'':11}{r['message']}")
 
-    resume = ", ".join(f"{n} {v}" for v, n in sorted(counts.items(), key=lambda kv: -kv[0].exit_code)) #Les membres de l'énumération sont triés par gravité décroissante, puis on construit une chaîne de résumé.
+    resume = ", ".join(f"{n} {v.name}" for v, n in sorted(counts.items(), key=lambda kv: -kv[0].exit_code)) #Les membres de l'énumération sont triés par gravité décroissante, puis on construit une chaîne de résumé.
     print(f"\n{len(files)} fichier(s) analysé(s) - {resume or 'aucun résultat'}")
 
     if args.json:

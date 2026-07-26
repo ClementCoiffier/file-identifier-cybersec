@@ -33,7 +33,7 @@
     {
       "type": "ZIP archive",
       "magic": "504B0304",
-      "extensions": [".zip", ".docx", ".xlsx", ".pptx", ".apk", ".jar"]
+      "extensions": [".zip"]
     },
     {
       "type": "RAR archive",
