@@ -18,3 +18,8 @@ rapport*.json
 rapport*.csv
 rapport*.txt
 alertes*.json
+
+# Artefacts pytest
+.pytest_cache/
+.coverage
+htmlcov/

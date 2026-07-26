@@ -65,7 +65,7 @@ def enable_colors():
     """Active les couleurs uniquement si la sortie est un vrai terminal."""
     if not sys.stdout.isatty(): #Si l'user écrit python file_identifier.py samples > rapport.txt, la sortie n'est plus un terminal mais un fichier. L'outil CLI teste isatty avant de colorer ce qui garde la sortie exploitable par grep ou par un autre script.
         return False
-    if os.name =="nt":
+    if os.name =="nt": #pragma: no cover
         os.system("") #active l'interprétation des séquences ANSI sous Windows (contournement)
     return True
 
@@ -255,5 +255,5 @@ def main():
 
     sys.exit(worst)
 
-if __name__ == "__main__":
+if __name__ == "__main__": #pragma: no cover
     main()
