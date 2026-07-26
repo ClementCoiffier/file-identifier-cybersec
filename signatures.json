@@ -59,6 +59,21 @@
       "type": "BMP image",
       "magic": "424D",
       "extensions": [".bmp"]
+    },
+    {
+      "type": "UTF-16 LE text",
+      "magic": "FFFE",
+      "extensions": [".txt", ".csv", ".log", ".md", ".xml", ".json", ".ini", ".reg", ".ps1"]
+    },
+    {
+      "type": "UTF-16 BE text",
+      "magic": "FEFF",
+      "extensions": [".txt", ".csv", ".log", ".md", ".xml", ".json", ".ini", ".reg", ".ps1"]
+    },
+    {
+      "type": "UTF-8 text (BOM)",
+      "magic": "EFBBBF",
+      "extensions": [".txt", ".csv", ".log", ".md", ".xml", ".json", ".ini", ".yml", ".ps1"]
     }
   ]
 }

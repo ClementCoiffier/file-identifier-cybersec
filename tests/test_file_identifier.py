@@ -221,3 +221,66 @@ def test_main_codes_de_sortie(tmp_path, monkeypatch, contenu, code_attendu):
         main()
 
     assert sortie.value.code == code_attendu
+
+from file_identifier import (
+    shannon_entropy, printable_ratio, classify_unknown, entropy_findings,
+)
+
+
+def test_entropie_nulle():
+    assert shannon_entropy(b"A" * 1000) == 0.0
+
+
+def test_entropie_texte():
+    texte = ("le vif renard brun saute par dessus le chien paresseux " * 200).encode()
+    assert 3.5 < shannon_entropy(texte) < 5.0
+
+
+def test_entropie_aleatoire():
+    assert shannon_entropy(bytes(range(256)) * 32) > 7.9
+
+
+def test_entropie_donnees_vides():
+    assert shannon_entropy(b"") == 0.0
+
+
+def test_ratio_imprimable():
+    assert printable_ratio(b"hello world\n") == 1.0
+    assert printable_ratio(b"\x00\x01\x02\x03") == 0.0
+    assert printable_ratio(b"ab\x00\x01") == 0.5
+
+
+def test_txt_reconnu_comme_texte():
+    verdict, _ = classify_unknown("notes.txt", 0.99)
+    assert verdict is Verdict.OK
+
+
+def test_texte_extension_inhabituelle_reste_inconnu():
+    verdict, _ = classify_unknown("data.xyz", 0.99)
+    assert verdict is Verdict.UNKNOWN
+
+
+def test_txt_chiffre_est_critique():
+    assert entropy_findings(".txt", None, 7.92, 8192)[0] is Verdict.CRITICAL
+
+
+def test_exe_packe_est_suspect():
+    sig = {"type": "Windows executable (PE)", "extensions": [".exe"]}
+    assert entropy_findings(".exe", sig, 7.6, 8192)[0] is Verdict.MISMATCH
+
+
+def test_petit_fichier_echappe_aux_seuils():
+    assert entropy_findings(".txt", None, 8.0, 100) is None
+
+
+def test_heuristique_naggrave_pas_a_tort(tmp_path, signatures):
+    """Un vrai fichier journal ne doit déclencher aucune alerte."""
+    f = tmp_path / "journal.log"
+    f.write_bytes(b"2026-07-26 connexion utilisateur clement\n" * 300)
+    assert scan_file(str(f), signatures)["verdict"] is Verdict.OK
+
+
+def test_donnees_chiffrees_deguisees_en_texte(tmp_path, signatures):
+    f = tmp_path / "notes.txt"
+    f.write_bytes(bytes(range(256)) * 32)   # entropie 8.0, aucune signature connue
+    assert scan_file(str(f), signatures)["verdict"] is Verdict.CRITICAL

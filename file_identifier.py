@@ -4,13 +4,16 @@ import os
 import argparse
 import csv
 import zipfile
+import math
+
 from enum import Enum
 from datetime import datetime
+from collections import Counter
 
-VERSION = "0.5.0"
+VERSION = "0.6.0"
 RESET = "\033[0m" #remet tout à zéro, si pas de RESET toute la suite de la console reste colorée.
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "signatures.json") #Base trouvée, peu importe où on l'appelle.
-CSV_FIELDS = ["path", "size", "header", "type", "verdict", "message"]
+CSV_FIELDS = ["path", "size", "header", "type", "entropy", "printable_ratio", "verdict", "message"]
 
 #Types qui déguisés sous une autre extension, constituent un signal fort.
 DANGEROUS_TYPES = {
@@ -46,6 +49,24 @@ ZIP_SUBTYPES = [
      "extensions": [".jar", ".war", ".ear"]},
 ]
 
+HEADER_SIZE = 16
+SAMPLE_SIZE = 8192
+
+# ASCII imprimable, plus tabulation, saut de ligne et retour chariot.
+PRINTABLE = set(range(0x20, 0x7F)) | {0x09, 0x0A, 0x0D}
+
+# En dessous de cette taille, les mesures statistiques ne veulent rien dire.
+MIN_SAMPLE_SIZE = 256
+
+TEXT_RATIO_THRESHOLD = 0.95         # au-delà : contenu considéré textuel
+DISGUISED_ENTROPY_THRESHOLD = 7.5   # au-delà, dans un fichier texte : chiffré ou compressé
+PACKED_ENTROPY_THRESHOLD = 7.2      # au-delà, dans un exécutable : probablement packé
+
+TEXT_EXTENSIONS = [
+    ".txt", ".csv", ".tsv", ".log", ".md", ".json", ".xml", ".html", ".htm",
+    ".css", ".js", ".py", ".c", ".h", ".java", ".ini", ".cfg", ".conf",
+    ".yml", ".yaml", ".svg", ".sql", ".sh", ".bat", ".ps1",
+]
 class Verdict(Enum):
     """Verdicts possibles, avec leur libellé d'affichage et leur code de sortie."""
     #\033 est le caractère d'échappement ASCII (27)
@@ -80,10 +101,64 @@ def load_signatures(db_path=DB_PATH):
         sig["magic_bytes"] = bytes.fromhex(sig["magic"]) #conversion d'octets depuis l'hexa.
     return data["signatures"]
 
-def read_header(filepath, num_bytes=16): #16 octets (assez pour couvrir la plus longue signature de la base).
-    """Lit les premiers octets d'un fichier en mode binaire."""
-    with open(filepath, "rb") as f: 
-        return f.read(num_bytes) #f.read(16)=retourne un objet bytes pas string.
+#def read_header(filepath, num_bytes=16): #16 octets (assez pour couvrir la plus longue signature de la base).
+#    """Lit les premiers octets d'un fichier en mode binaire."""
+#    with open(filepath, "rb") as f: 
+#        return f.read(num_bytes) #f.read(16)=retourne un objet bytes pas string.
+
+def read_sample(filepath, num_bytes=SAMPLE_SIZE):
+    """Lit les premiers octets d'un fichier, assez pour l'analyse statistique."""
+    with open(filepath, "rb") as f:
+        return f.read(num_bytes)
+
+
+def printable_ratio(data):
+    """Fraction d'octets correspondant à des caractères affichables (0.0 à 1.0)."""
+    if not data:
+        return 0.0
+    return sum(1 for b in data if b in PRINTABLE) / len(data)
+
+
+def shannon_entropy(data):
+    """Entropie de Shannon en bits par octet, de 0 (uniforme) à 8 (aléatoire)."""
+    if not data:
+        return 0.0
+    total = len(data)
+    entropie = -sum((count / total) * math.log2(count / total)
+                    for count in Counter(data).values())
+    return entropie if entropie else 0.0
+
+def classify_unknown(filepath, printable):
+    """Verdict pour un fichier dont aucune signature ne correspond."""
+    ext = get_extension(filepath)
+
+    if printable >= TEXT_RATIO_THRESHOLD:
+        if ext in TEXT_EXTENSIONS:
+            return (Verdict.OK,
+                    f"Contenu textuel ({printable:.0%} d'octets imprimables), "
+                    f"cohérent avec l'extension {ext}")
+        return (Verdict.UNKNOWN,
+                f"Contenu probablement textuel ({printable:.0%} d'octets "
+                "imprimables), format précis non identifié")
+
+    return (Verdict.UNKNOWN, "Type réel non identifiable (signature absente de la base)")
+
+def entropy_findings(ext, sig, entropy, sample_size):
+    """Anomalie révélée par l'entropie, ou None."""
+    if sample_size < MIN_SAMPLE_SIZE:
+        return None
+
+    if ext in TEXT_EXTENSIONS and entropy >= DISGUISED_ENTROPY_THRESHOLD:
+        return (Verdict.CRITICAL,
+                f"Extension {ext} annoncée mais entropie de {entropy:.2f}/8 : "
+                "contenu chiffré ou compressé déguisé en texte")
+
+    if sig and sig["type"] in DANGEROUS_TYPES and entropy >= PACKED_ENTROPY_THRESHOLD:
+        return (Verdict.MISMATCH,
+                f"Exécutable à entropie {entropy:.2f}/8 : probablement packé "
+                "(compressé ou chiffré pour gêner l'analyse statique)")
+
+    return None
 
 def identify(header, signatures):
     """Identifie le type réel d'un fichier à partir de son header.
@@ -125,11 +200,16 @@ def check_mismatch(filepath, sig):
 def scan_file(filepath, signatures, deep=True):
     """Analyse un fichier et retourne un dict de résultat."""
     try:
-        header = read_header(filepath)
+        sample = read_sample(filepath)
         size = os.path.getsize(filepath)
-    except (OSError) as e:
+    except OSError as e:
         return {"path": filepath, "size": None, "header": None, "type": None,
+                "entropy": None, "printable_ratio": None,
                 "verdict": Verdict.ERREUR, "message": f"Lecture impossible : {e}"}
+
+    header = sample[:HEADER_SIZE]
+    entropy = shannon_entropy(sample)
+    printable = printable_ratio(sample)
 
     sig = identify(header, signatures)
 
@@ -137,12 +217,24 @@ def scan_file(filepath, signatures, deep=True):
         sub = inspect_zip(filepath)
         if sub:
             sig = sub
-    verdict, message = check_mismatch(filepath, sig)
+
+    if sig is None:
+        verdict, message = classify_unknown(filepath, printable)
+    else:
+        verdict, message = check_mismatch(filepath, sig)
+
+    # L'heuristique ne peut qu'aggraver un verdict, jamais l'adoucir.
+    finding = entropy_findings(get_extension(filepath), sig, entropy, len(sample))
+    if finding and finding[0].exit_code > verdict.exit_code:
+        verdict, message = finding
+
     return {"path": filepath,
             "size": size,
-            "header": header.hex(" ").upper() if header else "", #Le header est stocké en chaîne via .hex(" "), pas en bytes car le module json ne sait pas sérialiser des bytes
-            "type": sig["type"] if sig else None, 
-            "verdict": verdict, 
+            "header": header.hex(" ").upper() if header else "",
+            "type": sig["type"] if sig else None,
+            "entropy": round(entropy, 2),
+            "printable_ratio": round(printable, 3),
+            "verdict": verdict,
             "message": message}
 
 def collect_files(paths, recursive=False):
